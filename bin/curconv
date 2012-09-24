@@ -1,0 +1,92 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+require 'net/http'
+require 'pstore'
+
+# Convert currencies with information retrieved from the network and cache the
+# answers.
+class Convertor
+	def initialize
+		@cache = PStore.new(File.join(Dir.home, '.curconv-data'), true)
+	end
+
+	# Convert +amount+ units of the currency +from_cur+ to the currency +to_cur+.
+	def convert(from_cur, to_cur, amount)
+		amount * get_rate(from_cur, to_cur)
+	end
+
+	# Get the conversion rate between +from_cur+ and +to_cur+. Unless +use_cache+
+	# is +false+, the rate will be fetched from the network iff a value has not
+	# been added to the cache within 24 hours.
+	def get_rate(from_cur, to_cur, use_cache=true)
+		@cache.transaction do
+			rate, fetched = @cache[ [from_cur, to_cur] ]
+
+			# unless we should use the cache and the rate exists and was fetched
+			# within 24 hours
+			unless use_cache and fetched and ( (Time.now - fetched) < 86400 )
+				rate = fetch_rate(from_cur, to_cur)
+				@cache[ [from_cur, to_cur] ] = [rate, Time.now]
+			end
+
+			rate
+		end
+	end
+
+	# Fetch the conversion rate between +from_cur+ and +to_cur+.
+	def fetch_rate(from_cur, to_cur)
+		from_cur, to_cur = [from_cur, to_cur].map(&:to_s)
+		unless [from_cur, to_cur].all?{|c| c =~ /\A[A-Z]{3}\z/}
+			raise(ArgumentError, 'currencies must be a three letter currency code')
+		end
+
+		con = Net::HTTP.new('www.google.com', 443)
+		con.use_ssl = true
+
+		query = "#{from_cur} to #{to_cur}"
+		resp = con.get("/ig/calculator?#{URI.encode_www_form(hl: :en, q: query)}")
+
+		if (resp.code_type != Net::HTTPOK) or (/error: ".+"/ =~ resp.body)
+			raise('there was an error fetching the conversion rate')
+		end
+
+		result = resp.body.match(/rhs: "([\d\.]+) /)[1]
+		unless result
+			raise('there was an error parsing the server response')
+		end
+
+		result.to_f
+	end
+end
+
+if $PROGRAM_NAME == __FILE__
+	if ARGV[0] == "--skip-cache"
+		skip_cache = true
+		ARGV.shift()
+	else
+		skip_cache = false
+	end
+
+	from_cur, to_cur, amount = ARGV
+	amount ||= '1'
+	amount = amount.gsub(',', '').to_f
+
+	c = Convertor.new
+	begin
+		c.get_rate(from_cur, to_cur, false) if skip_cache
+		res = c.convert(from_cur, to_cur, amount)
+	rescue StandardError => ex
+		warn(ex.message)
+		exit(1)
+	end
+
+	# Show more decimal places when amounts are low.
+	if (res <= 0.1) or (amount <= 0.1)
+		format_str = "%s %.4f = %s %.4f"
+	else
+		format_str = "%s %.2f = %s %.2f"
+	end
+
+	puts(format_str % [from_cur, amount, to_cur, res])
+end
