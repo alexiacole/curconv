@@ -16,20 +16,40 @@ class Convertor
 		amount * get_rate(from_cur, to_cur)
 	end
 
-	# Get the conversion rate between +from_cur+ and +to_cur+. Unless +use_cache+
-	# is +false+, the rate will be fetched from the network iff a value has not
-	# been added to the cache within 24 hours.
-	def get_rate(from_cur, to_cur, use_cache=true)
+	# Get the conversion rate between +from_cur+ and +to_cur+. If +use_cache+ is
+	# +true+, the rate will be fetched from the network; if it is +false+, the
+	# rate will never be fetched from the network, and +nil+ will be returned if
+	# no rate is available; if it is +nil+, the rate will be fetched from the
+	# network iff it hasn't been fetched in the last 24 hours.
+	def get_rate(from_cur, to_cur, use_cache=nil)
 		rate, fetched = @cache.transaction{ @cache[[from_cur, to_cur]] }
 
-		# unless we should use the cache and the rate exists and was fetched
-		# within 24 hours
-		unless use_cache and fetched and ( (Time.now - fetched) < 86400 )
+		case use_cache
+			when true
+				rate
+
+			when false
+				fetch_and_set_rate(from_cur, to_cur)
+
+			when nil
+				if fetched and (fetched > (Time.now - 86400))
+					rate
+				else
+					fetch_and_set_rate(from_cur, to_cur)
+				end
+
+			else
+				raise(ArgumentError, 'use_cache must be true, false, or nil')
+		end
+	end
+
+	# Fetch and set the conversion rate from +from_cur+ to +to_cur+, and return
+	# that rate.
+	def fetch_and_set_rate(from_cur, to_cur)
 			rate = fetch_rate(from_cur, to_cur)
 			set_rate(from_cur, to_cur, rate)
-		end
 
-		rate
+			rate
 	end
 
 	# Fetch the conversion rate between +from_cur+ and +to_cur+.
@@ -68,20 +88,20 @@ class Convertor
 end
 
 if $PROGRAM_NAME == __FILE__
+	use_cache, set = nil, false
+
 	case ARGV[0]
 		when '--skip-cache'
-			skip_cache = true
-			set = false
+			use_cache = false
+			ARGV.shift()
+
+		when '--cache-only'
+			use_cache = true
 			ARGV.shift()
 
 		when '--set'
-			skip_cache = false
 			set = true
 			ARGV.shift()
-
-		else
-			skip_cache = false
-			set = false
 	end
 
 	from_cur, to_cur, amount = ARGV
@@ -96,7 +116,11 @@ if $PROGRAM_NAME == __FILE__
 	end
 
 	begin
-		c.get_rate(from_cur, to_cur, false) if skip_cache
+		if c.get_rate(from_cur, to_cur, use_cache) == nil
+			warn("The rate between #{from_cur} and #{to_cur} isn't in our cache.")
+			exit(1)
+		end
+
 		res = c.convert(from_cur, to_cur, amount)
 	rescue StandardError => ex
 		warn(ex.message)
