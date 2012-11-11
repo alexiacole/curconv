@@ -20,18 +20,16 @@ class Convertor
 	# is +false+, the rate will be fetched from the network iff a value has not
 	# been added to the cache within 24 hours.
 	def get_rate(from_cur, to_cur, use_cache=true)
-		@cache.transaction do
-			rate, fetched = @cache[ [from_cur, to_cur] ]
+		rate, fetched = @cache.transaction{ @cache[[from_cur, to_cur]] }
 
-			# unless we should use the cache and the rate exists and was fetched
-			# within 24 hours
-			unless use_cache and fetched and ( (Time.now - fetched) < 86400 )
-				rate = fetch_rate(from_cur, to_cur)
-				@cache[ [from_cur, to_cur] ] = [rate, Time.now]
-			end
-
-			rate
+		# unless we should use the cache and the rate exists and was fetched
+		# within 24 hours
+		unless use_cache and fetched and ( (Time.now - fetched) < 86400 )
+			rate = fetch_rate(from_cur, to_cur)
+			set_rate(from_cur, to_cur, rate)
 		end
+
+		rate
 	end
 
 	# Fetch the conversion rate between +from_cur+ and +to_cur+.
@@ -58,14 +56,32 @@ class Convertor
 
 		result.to_f
 	end
+
+	# Set the conversion rate between +from_cur+ and +to_cur+ to +rate+.
+	def set_rate(from_cur, to_cur, rate)
+		@cache.transaction do
+			@cache[ [from_cur, to_cur] ] = [rate, Time.now]
+		end
+
+		nil
+	end
 end
 
 if $PROGRAM_NAME == __FILE__
-	if ARGV[0] == "--skip-cache"
-		skip_cache = true
-		ARGV.shift()
-	else
-		skip_cache = false
+	case ARGV[0]
+		when '--skip-cache'
+			skip_cache = true
+			set = false
+			ARGV.shift()
+
+		when '--set'
+			skip_cache = false
+			set = true
+			ARGV.shift()
+
+		else
+			skip_cache = false
+			set = false
 	end
 
 	from_cur, to_cur, amount = ARGV
@@ -73,6 +89,12 @@ if $PROGRAM_NAME == __FILE__
 	amount = amount.gsub(',', '').to_f
 
 	c = Convertor.new
+
+	if set
+		c.set_rate(from_cur, to_cur, amount)
+		exit()
+	end
+
 	begin
 		c.get_rate(from_cur, to_cur, false) if skip_cache
 		res = c.convert(from_cur, to_cur, amount)
